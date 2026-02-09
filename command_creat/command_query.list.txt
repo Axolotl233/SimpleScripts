@@ -1,0 +1,110 @@
+	 csvtk grep -P 1.lst -f 1 --out-tabs -t 1.file > 1.grep.file
+	 csvtk merge -f "1;1" -H name1.csv name2.csv
+
+[csvtk]//
+	#read
+	meryl count k=15 output merylDB ref.fa
+	meryl print greater-than distinct=0.9998 merylDB > repetitive_k15.txt
+	winnowmap -W repetitive_k15.txt -ax map-ont ref.fa ont.fq.gz > output.sam
+	winnowmap -W repetitive_k15.txt -ax map-pb ref.fa hifi.fq.gz > output.sam
+
+	#genome
+	meryl count k=19 output merylDB asm1.fa
+	meryl print greater-than distinct=0.9998 merylDB > repetitive_k19.txt
+	winnowmap -W repetitive_k19.txt --secondary=no -x asm20 ~/database/genome_data/Brachypodium_arbuscula/JGI_31/Barbuscula.genome.fa ./genome.hic.hap2.p_ctg.fa > output.paf
+
+[winnowmap]//
+	busco -i genome.fa -l ~/database/busco/eukaryota_odb10/ -o genome -m genome --offline --skip_bbtools -c 30
+
+[busco]//
+	# creating a diamond-formatted database file
+	./diamond makedb --in reference.fasta -d reference
+	# running a search in blastp mode
+	./diamond blastp -d reference -q queries.fasta -o matches.tsv
+	# running a search in blastx mode
+	./diamond blastx -d reference -q reads.fasta -o matches.tsv
+	# downloading and using a BLAST database
+	update_blastdb.pl --decompress --blastdb_version 5 swissprot
+	./diamond prepdb -d swissprot
+	./diamond blastp -d swissprot -q queries.fasta -o matches.tsv
+
+	 diamond blastp --db diamond.dmnd --query pep.fa --out blast.out --sensitive --outfmt 6 -p 30 --max-target-seqs 1 --tmpdir ./tmp
+
+[diamond]//
+	fastp -w 10 -5 -3 -n 0 -f 5 -F 5 -t 5 -T 5 -q 20 -i read_1.fq.gz -I read_2.fq.gz -o read_1.fix.fq.gz -O read_2.fix.fq.gz
+
+[fastp]//
+	java -Xmx100G -Xms100G -jar ~/software/xmapper/x-mapper-1.1.0-beta13.jar --reference genome.fa --paired-queries Seq_1.fq.gz Seq_2.fq.gz --out-sam - --num-threads 20 | samtools view -hF 268 - |samtools sort -O bam -@ 20 -T tmp -o Seq_Xmap.sort.bam
+
+[xmap]//
+	FastK -v -t4 -k31 -M16 -T4 data/Scer/*.fastq.gz -Ndata/Scer/FastK_Table
+	smudgeplot.py hetmers -L 12 -t 4 -o data/Scer/kmerpairs --verbose data/Scer/FastK_Table
+	smudgeplot.py all -o data/Scer/trial_run data/Scer/kmerpairs_text.smu
+	Histex -h1:10000 -G FastK_Table > FastK.hist
+	genomescope.R -i FastK.hist -o ./ -p ploid (auto need to divied 2) -k 31
+
+[smudgeplot]//
+	makeblastdb -dbtype nucl -in target.fa -input_type fasta -out target.blastdb
+	blastn -db target.blastdb -evalue 1e-5 -query query.fa -num_threads 60 -out blast.out -max_target_seqs 10 -outfmt 6
+
+[blast]//
+	 ~/software/art_bin_MountRainier/art_illumina -ss HS25 -sam -i Bdistachyon.genome.fa -p -l 100 -f 10 -m 200 -s 10 -o paired_sim
+
+[art_sim]//
+
+	  bwa-mem2 mem -5SP -t 20 asm.fa HiC_1.fq.gz HiC_2.fq.gz | samblaster | samtools view - -@ 20 -S -h -b -F 3340 -o HiC.bam
+	  ~/software/HapHiC/utils/filter_bam HiC.bam 1 --nm 3 --threads 14 | samtools view - -b -@ 14 -o HiC.filtered.bam
+	  ~/software/HapHiC/haphic pipeline asm.fa HiC.filtered.bam 1 --quick_view --threads 30 --processes 30 --gfa asm.gfa --correct_nrounds 2
+
+	  # For haplotype-phased assembles of auto-x-ploids, set the parameter to x
+	  ~/software/HapHiC/haphic pipeline asm.fa HiC.filtered.bam nchrs --remove_allelic_links x
+	  
+	  ~/software/HapHiC/utils/juicer post -o out_JBAT out_JBAT.review.assembly out_JBAT.liftover.agp asm.fa
+	  ~/software/HapHiC/haphic plot out_JBAT.FINAL.agp HiC.filtered.bam
+	  cut -f 1,6 out_JBAT.liftover.agp |perl -anle 'print "$F[1]\t$F[0]"' > out_JBAT.liftover.rename.txt
+	  perl ~/code/seq/fasta_rename.pl out_JBAT.liftover.rename.txt genome.hic.p_ctg.fa > genome.hic.p_ctg.liftover.fa
+
+[haphic]//
+	 nucmer --mum -c 100 -l 50 -t 30 Bpho_scaffold_1.fa Ba1.fa
+	 delta-filter -1 out.delta > out.delta.filter
+	 show-coords -I 75 -r -d -c -T -b out.delta.filter > out.delta.filter.coord
+	 
+[nucmer]//
+
+	sh $MERQURY/best_k.sh <genome_size> [tolerable_collision_rate=0.001]
+	#k = 31 in most of cases
+	meryl k=$k count *.fastq.gz output read-db.meryl
+	$MERQURY/merqury.sh read-db.meryl genome.fasta out_prefix
+
+[merqury]//
+
+	Trinity --seqType fq --max_memory 200G --left fq1_1,fq2_1,fq3_1 --right fq1_2,fq2_2,fq3_2 --trimmomatic --output trinity --full_cleanup
+
+[Trinity]//
+
+	pankmer index -g fasta -o index -t 40;
+	tar -cvf index.tar ./index/*;
+	pankmer adj-matrix -i index.tar -o matrix.csv;
+	pankmer clustermap -i matrix.csv -o heatmap.svg
+
+[pan-kmer]//
+
+	mash sketch -o mash_sketch fasta/*fasta
+	mash dist mash_sketch.msh mash_sketch.msh > mash_dist.txt
+	Rscript plot_mash.R
+
+[mash]//
+	python -m jcvi.compara.catalog ortholog SPECIES_1 SPECIES_2
+	python -m jcvi.compara.synteny screen --minspan=30 --simple SPECIES_1.SPECIES_2.anchors SPECIES_1.SPECIES_2.anchors.simple
+	python -m jcvi.graphics.karyotype --chrstyle roundrect --figsize 10x10 seqid.txt layout.txt
+
+[jvci]//
+	mv xxx xxx.sra
+	pfastq-dump -t 10 -O ./ ./xxxx.sra
+	pfastq-dump -t 10 --split-3 -O ./ ./xxxx.sra
+
+[pfastq-dump]//
+	## just run
+	~/software/CPhasing/bin/activate_cphasing
+
+[cphasing]//

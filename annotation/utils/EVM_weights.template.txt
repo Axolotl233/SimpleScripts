@@ -1,0 +1,13 @@
+ABINITIO_PREDICTION	annevo	6
+ABINITIO_PREDICTION	eviann	10
+ABINITIO_PREDICTION	helixer	6
+PROTEIN	barbuscula	10
+PROTEIN	bdistachyon	10
+PROTEIN	bhybridum_abr113	10
+PROTEIN	bhybridum_bd26	10
+PROTEIN	bhybridum_eci	10
+PROTEIN	bmexicanum	10
+PROTEIN	bstacei_abr114	10
+PROTEIN	bstacei_eci	10
+PROTEIN	bsylvaticum	10
+TRANSCRIPT	RNA_SEQ	12

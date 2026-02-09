@@ -1,0 +1,137 @@
+#! perl
+
+use warnings;
+use strict;
+#use MCE::Loop;
+
+if(@ARGV < 2){
+    print STDERR "USAGE: perl $0 \$ref [general|detail] \$gff1 \$gff2 ...\n";
+    print STDERR "       not support TRF\n";
+    print STDERR "       general: column 2, TE|no_TE\n";
+    print STDERR "       detail: colunm 3, detail information\n";
+    exit;
+}
+#srand(time(NULL));
+#my $random_n = int(rand() * 10000000);
+#my $thread_mce = 10;
+    
+my $f_ref = shift;
+my $tp = shift;
+
+my %ref1 = &load_ref1($f_ref);
+my %ref2 = &load_ref2($f_ref);
+my %repeat1;
+my %repeat2;
+
+for my $f (@ARGV){
+    open IN,'<',$f or die "$!";
+    while(<IN>){
+	chomp;
+	my $type1 = "NA";
+	my $type2 = "NA";
+	my @l = split/\t/;
+	
+	(my $tmp = $l[8]) =~ s/.*Class=//;
+	$tmp =~ s/;.*//;
+	if(exists $ref1{$tmp} && exists $ref2{$tmp}){
+	    $type2 = $ref1{$tmp};
+	    $type1 = $ref2{$tmp};
+	}
+	
+	$repeat1{$l[0]}{$l[3]} = [$l[3],$l[4],$type1,$l[5]];
+	$repeat2{$l[0]}{$l[3]} = [$l[3],$l[4],$type2,$l[5]];
+    }
+    close IN;
+}
+
+if($tp eq "general"){
+    &run(\%repeat1);
+}elsif($tp eq "detail"){
+    &run(\%repeat2);
+}else{
+    print STDERR "please check usage with run: perl $0\n";
+    exit;
+}
+
+
+sub run{
+    my $rr = shift @_;
+    my %h = %{$rr};
+    my %m;
+    my %t;
+    for my $chr (sort {$a cmp $b} keys %h){
+	my $block_l = 0;
+	my @pos = sort {$a <=> $b} keys %{$h{$chr}};
+	my @info = @{$h{$chr}{$pos[0]}};
+	my $block_s = $info[0];
+	my $block_e = $info[1];
+	my $type = $info[2];
+	my $type_l = $info[1]- $info[0] + 1;
+	my $type_s = $info[3];
+	$t{$type_s} = [$type,$type_l];
+	for (my $i = 1;$i < @pos;$i ++){
+	    @info = @{$h{$chr}{$pos[$i]}};
+	    if($block_s <= $info[1] && $info[0] <= $block_e){
+		$type_l = $info[1]- $info[0] + 1;
+		$type = $info[2];
+		$type_s = $info[3];
+		$block_s = $block_s < $info[0]?$block_s:$info[0];
+		$block_e = $block_e > $info[1]?$block_e:$info[1];
+		$t{$type_s} = [$type,$type_l];
+	    }else{
+		$block_l = $block_e - $block_s + 1;
+		my $high_s = (sort {$b <=> $a} keys %t)[0];
+		my $type_lt = ${$t{$high_s}}[0];
+		my $type_ll = ${$t{$high_s}}[1];
+		my $type_lr = sprintf("%.3f",($type_ll/$block_l));
+		$type_lr = $type_lr > 1 ? 1 : $type_lr;
+		print join"\t",($chr,$block_s,$block_e,$type_lt,$type_lr);
+		print "\n";
+		%t = ();
+		$block_e = $info[1];
+		$block_s = $info[0];
+		$type = $info[2];
+		$type_s = $info[3];
+		$type_l = $info[1]- $info[0] + 1;
+		$t{$type_s} = [$type,$type_l];
+		
+	    }
+	}
+	$block_l = $block_e - $block_s + 1;
+	my $high_s = (sort {$b <=> $a} keys %t)[0];
+	my $type_lt = ${$t{$high_s}}[0];
+	my $type_ll = ${$t{$high_s}}[1];
+	my $type_lr = sprintf("%.3f",($type_ll/$block_l));
+	$type_lr = $type_lr > 1 ? 1 : $type_lr;
+	print join"\t",($chr,$block_s,$block_e,$type_lt,$type_lr);
+	print "\n";
+    }
+    return 1;
+}
+
+
+sub load_ref1{
+    my $f = shift @_;
+    my %h;
+    open IN,'<',$f;
+    while(<IN>){
+	chomp;
+	my @l = split/\t/;
+	$h{$l[0]} = $l[2];
+    }
+    close IN;
+    return %h;
+}
+
+sub load_ref2{
+    my $f = shift @_;
+    my %h;
+    open IN,'<',$f;
+    while(<IN>){
+	chomp;
+        my @l = split/\t/;
+        $h{$l[0]} = $l[1];
+    }
+    close IN;
+    return %h;
+}

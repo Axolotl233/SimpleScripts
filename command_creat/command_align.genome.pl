@@ -1,0 +1,82 @@
+#! perl
+
+use warnings;
+use strict;
+use File::Basename;
+
+if(scalar @ARGV < 2){
+    print STDERR "\nUSAGE : perl $0 \$query \$target_name [\$method \$plot_method \$option \$plot_option]\n\n";
+    print STDERR "\$method [winnowmap] \$option [-t 30 -x asm20 --secondary=no], default\n";
+    print STDERR "\$method [minimap2] \$option [-t 30 -x asm20 --secondary=no]\n";
+    print STDERR "\$method [wfmash] \$option [-t 30 -B /home/wenjie/tmp -o]\n";
+    print STDERR "\$method [fastga] \$option [-T30]\n";
+    print STDERR "\n";
+    print STDERR "\$plot_method [custom] \$plot_option [-p 12 -m 5000], default\n";
+    print STDERR "\$plot_method [ALNplot] \$plot_option [-p -l5000]\n";
+    exit;
+}
+
+my $ref_f = "/home/wenjie/code/command_creat/command_align.genome.txt";
+my %ref = &load_ref($ref_f);
+
+my $query = shift;
+my $target_n = shift;
+my $method = shift;
+$method //= "winnowmap";
+my $plot_method = shift;
+$plot_method //= "custom";
+my $option = shift;
+my $plot_option = shift;
+
+my $query_n = basename $query;
+if(exists $ref{$target_n}){
+    my @para = @{$ref{$target_n}};
+    my $o_paf = "$query_n.$target_n.paf";
+    if($method eq "winnowmap"){
+	$option //= "-t 30 -x asm20 --secondary=no";
+	print "winnowmap $option -W $para[0]/$para[1] $para[0]/$para[2] $query > $o_paf;";
+    }elsif($method eq "minimap2"){
+	$option //= "-t 30 -x asm20 --secondary=no";
+	print "minimap2 $option $para[0]/$para[2] $query > $o_paf;";
+    }elsif($method eq "wfmash"){
+	$option //= "-t 30 -B /home/wenjie/tmp -o";
+	print "wfmash $option $para[0]/$para[2] $query > $o_paf;";
+    }elsif($method eq "fastga"){
+	$option //= "-T30";
+	print "FastGA $option $query $para[0]/$para[2] > $o_paf;";
+    }
+    else{
+	print STDERR "\nUnsupported tool: $method, must be one of list: winnowmap, minimap2, wfmash, FastGA\n";
+	exit;
+    }
+    if($plot_method eq "custom"){
+	$plot_option //= "-p 12 -m 5000";
+	print "Rscript ~/code/paf/Plot.pafCoordsDotPlotly_wj.R -i $o_paf -o $o_paf $plot_option;";
+    }elsif($plot_method eq "ALNplot"){
+	$plot_option //= "-p -l2000";
+	print "ALNplot $o_paf $plot_option;";
+    }else{
+	print STDERR "\nUnsupported plot tool: $plot_method, must be one of list: custom ALNplot\n";
+	exit;
+    }
+    print "perl ~/code/paf/paf_stat.alignment_length.pl --paf $o_paf --min_length_query 20000 --min_length_match 2000 --pr 0 |sort -k1,1 -k4,4n > $o_paf\.stat;";
+}else{
+    print STDERR "\nUnsupported reference: $target_n, must be one of list:\n\n[";
+    print STDERR join", ", sort {$a cmp $b} keys %ref;
+    print STDERR "]\n";
+    exit;
+}
+
+sub load_ref{
+    my $f = shift @_;
+    open IN,'<',$f;
+    my %h;
+    while(<IN>){
+	chomp;
+	next if /^$/;
+	my @l = split/\t/;
+	@{$h{$l[0]}} = ($l[1],$l[2],$l[3]);
+    }
+    close IN;
+    return %h
+}

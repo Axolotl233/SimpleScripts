@@ -1,0 +1,284 @@
+#! perl
+
+use strict;
+use warnings;
+use Cwd qw/abs_path getcwd/;
+use File::Basename;
+use FindBin qw($Bin);
+
+if(scalar @ARGV != 1){
+    &print_help;
+    exit;
+}
+
+my $base_dir = getcwd();
+my $config_file = shift;
+my %config = &load_config($config_file);
+
+mkdir "$config{output}" if ! -e "$config{output}";
+my @step = ("0.split","1.abinitio","2.homologs","3.rna","4.evm");
+for(my $i = 0; $i < @step;$i ++) {
+    mkdir "$config{output}/$step[$i]" if ! -e "$config{output}/$step[$i]";
+    `rm -fr $config{output}/$step[$i].run.sh` if -e "$config{output}/$step[$i].run.sh";
+}
+### SplitGenome
+mkdir "$config{output}/$step[0]/genome" if ! -e "$config{output}/$step[0]/genome";
+mkdir "$config{output}/$step[0]/genome_mask" if ! -e "$config{output}/$step[0]/genome_mask";
+
+open O0,'>',"$config{output}/$step[0].run.sh";
+print O0 "perl $config{script}/split_fasta.pl $config{genome} $config{output}/$step[0]/genome no\n";
+if($config{genome_mask} ne "NA"){
+    print O0 "perl $config{script}/split_fasta.pl $config{genome_mask} $config{output}/$step[0]/genome_mask no\n";
+}
+close O0;
+
+my @fs = sort{$a cmp $b} grep {/\.fa$/} `ls $config{output}/$step[0]/genome`;
+if(scalar @fs == 0){
+    `head -n 1 $config{output}/$step[0].run.sh|sh`;
+    @fs = sort{$a cmp $b} grep {/\.fa$/} `ls $config{output}/$step[0]/genome`;
+}
+chomp $_ for @fs;
+
+my %tt;
+$tt{$_}= 1 for split(/;/,$config{ab_tools});
+
+open O1,'>',"$config{output}/$step[1].run.sh";
+### Abinitio-augustus
+if(exists $tt{augustus}){
+    if($config{genome_mask} ne "NA"){
+	my @fs_m = sort{$a cmp $b} grep {/\.fa$/} `ls $config{output}/$step[0]/genome_mask`;
+	if(scalar @fs_m == 0){
+	    `tail -n 1 $config{output}/$step[0].run.sh|sh`;
+	    @fs_m = sort{$a cmp $b} grep {/\.fa$/} `ls $config{output}/$step[0]/genome_mask`;
+	}
+	chomp $_ for @fs_m;
+	my $tmp_dir1 = "$config{output}/$step[1]/augustus";
+	mkdir $tmp_dir1 if !-e $tmp_dir1;
+	mkdir "$tmp_dir1/results" if !-e "$tmp_dir1/results";
+	mkdir "$tmp_dir1/temp" if !-e "$tmp_dir1/temp";
+	`perl $config{script}/Run_augustus.pl $config{output}/$step[0]/genome_mask $tmp_dir1 $config{augustus} $config{augustus_train} $config{script}`;
+	print O1 "parallel -j $config{parallel_jobs} < $tmp_dir1/00.running.sh;parallel -j $config{parallel_jobs} < $tmp_dir1/01.converting.sh\n";
+    }else{
+	print STDERR "augustus needs repeat masked genome\n";
+    }
+}
+
+### Abinintio-helixer
+if(exists $tt{helixer}){
+    my $tmp_dir2 = "$config{output}/$step[1]/helixer";
+    mkdir $tmp_dir2 if !-e $tmp_dir2;
+    mkdir "$tmp_dir2/results" if !-e "$tmp_dir2/results";
+    open O1T,'>',"$tmp_dir2/00.running.sh";
+    for my $f (@fs){
+	(my $n = basename $f) =~ s/\..*//;
+	print O1T "python $config{helixer} --lineage $config{helixer_species} --fasta-path $config{output}/$step[0]/genome/$f --species $n --gff-output-path $tmp_dir2/results/$n.gff\n";
+    }
+    close O1T;
+    print O1 "parallel -j $config{parallel_jobs} < $tmp_dir2/00.running.sh\n";
+}
+### Abinintio-ANNEVO
+if(exists $tt{annevo}){
+    my $tmp_dir3 = "$config{output}/$step[1]/annevo";
+    mkdir $tmp_dir3 if !-e $tmp_dir3;
+    mkdir "$tmp_dir3/results" if !-e "$tmp_dir3/results";
+    open O1T,'>',"$tmp_dir3/00.running.sh";
+    for my $f (@fs){
+        (my $n = basename $f) =~ s/\..*//;
+        print O1T "python $config{annevo} --model_path $config{annevo_model} --genome $config{output}/$step[0]/genome/$f --output $tmp_dir3/results/$n.gff --threads $config{threads}\n";
+    }
+    close O1T;
+    print O1 "sh $tmp_dir3/00.running.sh\n";
+}
+### Abinintio-external
+if($config{external_gff} ne "NA"){
+    my @external_gffs = split(/;/,$config{external_gff});
+    for my $ff (@external_gffs) {
+	(my $external_gff_name = basename $ff) =~ s/\.(gff|gff3)//;
+	`perl $config{script}/z.phase_custom_abinitio_gff.pl $ff $external_gff_name $config{output}`;
+    }
+}
+close O1;
+
+### Homology-gemoma
+my $tmp_dir = "$config{output}/$step[2]/gemoma";
+mkdir $tmp_dir if !-e $tmp_dir;
+my @homologs_species=split(/;/,$config{homologs_species});
+open O2T,'>',"$tmp_dir/00.running.sh";
+for my $sp (@homologs_species){
+    next if -e "$tmp_dir/$sp.results/final_annotation.gff.for.train";
+    print O2T "$config{gemoma_java} -jar $config{gemoma} CLI GeMoMaPipeline threads=$config{threads} t=$config{genome} s=own g=$config{homologs_dir}/$sp.genome.fa a=$config{homologs_dir}/$sp.genomic.gff outdir=$tmp_dir/$sp.results AnnotationFinalizer.r=NO tblastn=false ; perl $config{script}/ConvertFormat_GeMoMa.pl $tmp_dir/$sp.results/final_annotation.gff\n";
+}
+close O2T;
+open O2 ,'>',"$config{output}/$step[2].run.sh";
+print O2 "sh $tmp_dir/00.running.sh";
+close O2;
+
+### RNA
+if($config{RNA_dir} ne "NA"){
+    if (! -e $config{RNA_dir}){
+	print STDERR "please check RNA-seq directory\n";
+    }
+    my %fs = load_fastq($config{RNA_dir});
+
+    my $tmp_dir4_1 = "$config{output}/$step[3]/index";
+    mkdir $tmp_dir4_1 if !-e $tmp_dir4_1;
+    open O3_1 ,'>',"$config{output}/$step[3]/index.sh";
+    print O3_1 "cd $tmp_dir4_1\n";
+    print O3_1 "ln -s $config{genome} genome.fa\n";
+    print O3_1 "hisat2-build -p 10 genome.fa genome\n";
+    print O3_1 "cd $config{output}/$step[3]\n";
+    close O3_1;
+
+    my $tmp_dir4_2 = "$config{output}/$step[3]/align";
+    mkdir $tmp_dir4_2 if !-e $tmp_dir4_2;
+    open O3_2 ,'>',"$config{output}/$step[3]/align.sh";
+    for my $sam (sort {$a cmp $b} keys %fs){
+	my @fq = @{$fs{$sam}};
+	print O3_2 "hisat2 -x $tmp_dir4_1/genome -p $config{threads} --dta -1 $fq[0] -2 $fq[1] 2>> $tmp_dir4_2/$sam.txt |samtools view -bS - | samtools sort -@ $config{threads} -o $tmp_dir4_2/$sam.sort.bam\n";
+    }
+    close O3_2;
+
+    my $tmp_dir4_3 = "$config{output}/$step[3]/assemble";
+    mkdir $tmp_dir4_3 if !-e $tmp_dir4_3;
+    open O3_3,'>',"$config{output}/$step[3]/assemble.sh";
+    for my $sam (sort {$a cmp $b} keys %fs){
+	print O3_3 "stringtie -p $config{threads} -o $tmp_dir4_3/$sam.gtf $tmp_dir4_2/$sam.sort.bam\n";
+    }
+    close O3_3;
+
+    my $software_base = `which TransDecoder.LongOrfs`;
+    chomp $software_base;
+    my $software_script_base = dirname $software_base;
+    $software_script_base = $software_script_base."/util";
+    my $tmp_dir4_4 = "$config{output}/$step[3]/orf_prediction";
+    mkdir $tmp_dir4_4 if !-e $tmp_dir4_4;
+    open O3_4,'>',"$config{output}/$step[3]/orf_prediction.sh";
+    for my $sam (sort {$a cmp $b} keys %fs){
+	print O3_4 "cd $tmp_dir4_4 ;";
+        print O3_4 "$software_script_base/gtf_genome_to_cdna_fasta.pl $tmp_dir4_3/$sam.gtf $tmp_dir4_1/genome.fa > $sam.fasta; $software_script_base/gtf_to_alignment_gff3.pl $tmp_dir4_3/$sam.gtf > $sam.gff3;";
+	print O3_4 "TransDecoder.LongOrfs -t $sam.fasta; TransDecoder.Predict -t $sam.fasta;";
+	print O3_4 "$software_script_base/cdna_alignment_orf_to_genome_orf.pl $sam.fasta.transdecoder.gff3 $sam.gff3 $sam.fasta > $sam.transdecoder.genome.gff3;";
+	print O3_4 "cd $config{output}/$step[3]\n";
+    }
+    my $tmp_dir5_5 = "$config{output}/$step[3]/prepare_4_evm";
+    mkdir $tmp_dir5_5 if !-e $tmp_dir5_5;
+    open O3_5 ,'>',"$config{output}/$step[3]/prepare_4_evm.sh";
+    print O3_5 "mv $tmp_dir4_4/*transdecoder.genome.gff3 $tmp_dir5_5\n";
+    close O3_5;
+
+    open O3,'>',"$config{output}/$step[3].run.sh";
+    print O3 "sh $config{output}/$step[3]/index.sh\n";
+    print O3 "sh $config{output}/$step[3]/align.sh\n";
+    print O3 "sh $config{output}/$step[3]/assemble.sh\n";
+    print O3 "sh $config{output}/$step[3]/orf_prediction.sh\n";
+    print O3 "sh $config{output}/$step[3]/prepare_4_evm.sh";
+    close O3;
+}
+
+### EVM
+open O4,'>',"$config{output}/$step[4].run.sh";
+#my $tmpdir4="$config{output}/$step[4]";
+if($config{RNA_dir} ne "NA"){
+    print O4 "perl $config{script}/EVM_prepare.pl $config{EVM} $config{output}/$step[1] $config{output}/$step[2]/gemoma $config{output}/$step[3]/prepare_4_evm $config{output}/$step[0]/genome $config{output}/$step[4]\n";
+}else{
+    print O4 "perl $config{script}/EVM_prepare.pl $config{EVM} $config{output}/$step[1] $config{output}/$step[2]/gemoma NA $config{output}/$step[0]/genome $config{output}/$step[4]\n";
+}
+print O4 "perl $config{script}/EVM_runcmd.pl $config{EVM} $config{output}/$step[0]/genome $config{output}/$step[4] $config{script} > $config{output}/$step[4]/01.split_prepare.sh\n";
+print O4 "parallel -j $config{parallel_jobs} < $config{output}/$step[4]/01.split_prepare.sh\n";
+print O4 "cat $config{output}/$step[4]/evm_for_each_chr/*/split_evm_running.sh > $config{output}/$step[4]/02.split_run.sh\n";
+print O4 "parallel -j $config{parallel_jobs} < $config{output}/$step[4]/02.split_run.sh\n";
+print O4 "cat $config{output}/$step[4]/evm_for_each_chr/*/commands.list > $config{output}/$step[4]/03.running.sh \n";
+print O4 "parallel -j $config{parallel_jobs} < $config{output}/$step[4]/03.running.sh\n";
+print O4 "perl $config{script}/EVM_mergecmd.pl $config{output}/$step[4]/evm_for_each_chr $config{EVM} > $config{output}/$step[4]/04.merge.sh \n";
+print O4 "parallel -j $config{parallel_jobs} < $config{output}/$step[4]/04.merge.sh\n";
+print O4 "cat $config{output}/$step[4]/evm_for_each_chr/*/evm.out.gff > $config{output}/$step[4]/merge.out.gff\n";
+print O4 "gffread $config{output}/$step[4]/merge.out.gff -g $config{genome} -x $config{output}/$step[4]/merge.out.gff.cds -y $config{output}/$step[4]/merge.out.gff.pep\n";
+close O4;
+
+sub load_config {
+    my %h;
+    my $f = shift @_;
+    open IN,'<',"$f" or die "no such file: $f\n";
+    while (<IN>) {
+        chomp;
+        next if /^#/;
+        next if /^\s*$/;
+	if(/^\S+\s*?=\s*$/){
+	    next;
+	}else{
+	    $_=~ /^(\S+)\s*?=\s*?([^#\s]+)\s*?#*?.*/;
+	    $h{$1}=$2;
+	}
+    }
+    close IN;
+    if(!exists $h{genome}){
+        print STDERR "please provide a absolute path of genome in $f\n";
+        exit;
+    }
+    #if(!exists $h{genome_mask}){
+    #    print STDERR "please provide a absolute path of masked genome in $f\n";
+    #    exit;
+    #}
+    if(!exists $h{homologs_dir}){
+	print STDERR "please provide a absolute path of directory for homo annotation in $f\n";
+        exit;
+    }
+    if(!exists $h{homologs_species}){
+        print STDERR "please provide species names used for homo annotation in $f\n";
+        exit;
+    }if(!exists $h{ab_tools}){
+	print STDERR "please provide tools used for ab into annotation in $f\n";
+	exit;
+    }
+    
+    $h{output} = exists $h{output} ? $h{output}:"gene_prediction";
+    $h{threads} = exists $h{threads} ? $h{threads}: 40;
+    $h{parallel_jobs} = exists $h{parallel_jobs} ? $h{parallel_jobs} : 40;
+    $h{script} =  exists $h{script}? $h{script}:"$Bin/utils";
+    $h{augustus} = exists $h{augustus}? $h{augustus}: "augustus";
+    $h{augustus_train} = exists $h{augustus_train}? $h{augustus_train}: "augustus_train";
+    $h{helixer} = exists $h{helixer}? $h{helixer}: "/home/wenjie/software/Helixer/Helixer.py";
+    $h{helixer_species} = exists $h{helixer_species}? $h{helixer_species}: "land_plant";
+    $h{annevo} = exists $h{annevo}? $h{annevo}: "/home/wenjie/software/ANNEVO/annotation.py";
+    $h{annevo_model} = exists $h{annevo_model}? $h{annevo_model} : "/home/wenjie/software/ANNEVO/ANNEVO_model/ANNEVO_Embryophyta.pt";
+    $h{gemoma} = exists $h{gemoma}? $h{gemoma}: "/home/wenjie/software/Gemoma/GeMoMa-1.9.jar";
+    $h{gemoma_java} = exists $h{gemoma_java}? $h{gemoma_java} : "java";
+    $h{EVM} =  exists $h{EVM}? $h{EVM}: "/home/wenjie/software/EVidenceModeler";
+    $h{RNA_dir} = exists $h{RNA_dir}? $h{RNA_dir}:"NA";
+    $h{external_gff} = exists $h{external_gff}? $h{external_gff} : "NA";
+    $h{output} = abs_path($h{output});
+    $h{homologs_dir} = abs_path($h{homologs_dir});
+    return %h;
+}
+
+sub print_help{
+    print STDERR "USAGE: perl $0 \$gene.anno.config\n";
+}
+
+sub load_fastq{
+    my $dir = shift @_;
+    my %h;
+    $dir = abs_path($dir);
+    my @fq1s = sort{$a cmp $b} grep {/(_|.)1(.|_)(fq|fastq)\.?(gz)?$/} `find $dir`;
+    for my $f1(@fq1s){
+        chomp $f1;
+        $f1 =~ /(_|.)1(.|_)(fq|fastq)\.?(gz)?/;
+        my $f1_n = basename $f1;
+        my @sep = ($1,$2,$3,(defined $4)?$4:"");
+        my @base = (1,2);
+        (my $f2_n = $f1_n) =~ s/$sep[0]$base[0]$sep[1]$sep[2]/$sep[0]$base[1]$sep[1]$sep[2]/;
+        (my $name = $f1_n) =~ s/$sep[0]$base[0]$sep[1]$sep[2]//;
+        my $f2 = "$dir/$f2_n";
+        if(! -e $f2){
+            print STDERR "please check if exist files:\n$f1\n$f2\n";
+                exit;
+        }
+        $name =~ s/\.$sep[3]// if $sep[3] ne "";
+        if(exists $h{$name}){
+            print STDERR "wrong reads information $name:$f1\n";
+            exit;
+        }
+        $h{$name} = [$f1,$f2];
+    }
+    return %h;
+}
